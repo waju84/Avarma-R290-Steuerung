@@ -1,0 +1,6 @@
+# eigene Zugangsdaten / Builds nicht hochladen
+*.bin
+*.elf
+build/
+.vscode/
+zugang.h
