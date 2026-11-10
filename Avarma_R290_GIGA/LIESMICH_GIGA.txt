@@ -1,0 +1,168 @@
+AVARMA R290 – GIGA R1 WiFi + GIGA Display Shield
+=================================================
+Firmware 1.36 – eigene Version fuer den GIGA (getrennt vom ESP32-S3), mit drei Tabs:
+  giga_compat.h  WLAN, Webserver, Einstellungen, Datenspeicher, MQTT, Tasks, Uhrzeit
+  giga_ui.h      Oberflaeche 800 x 480 mit Touch
+  giga_fonts.h   Schrift "Inter" (SIL Open Font License), geglaettet
+
+
+
+1. VERKABELUNG / PINS
+---------------------
+Das Display-Shield sitzt auf der Rueckseite (Stecker J5/J6). Alle Pins oben
+bleiben frei. Der GIGA arbeitet mit 3,3 V – keine 5-V-Signale an die Pins!
+
+  Funktion                       GIGA-Pin        Bemerkung
+  -----------------------------  --------------  ---------------------------------
+  RS485  RO  (Empfang)           D0  (RX0)       Serial1
+  RS485  DI  (Senden)            D1  (TX0)       Serial1
+  RS485  DE + /RE (gebrueckt)    D2              im Web aenderbar
+  RS485  VCC / GND               3V3 / GND       3,3-V-Modul (MAX3485, SP3485)
+  Raumfuehler SHT4x  SDA / SCL   D20 / D21       I2C "Wire", empfohlen
+  Raumfuehler DHT22  Daten       D3              10 kOhm nach 3V3, falls nicht am Modul
+  Ventil-Relais Motorstrom       D4              nur ohne ESBE-Ventilmodul
+  Ventil-Relais Richtung         D5              nur ohne ESBE-Ventilmodul
+  Logdaten                       intern (QSPI)   kein USB-Stick noetig, Archiv auf dem NAS (Abschnitt 8)
+  Stromversorgung                USB-C 5 V (min. 2 A) oder VIN 6..24 V
+
+
+2. MODBUS / RS485 VERKABELUNG
+-----------------------------
+  - Modul: 3,3-V-Typ mit DE/RE-Anschluss (MAX3485 / SP3485). Ein 5-V-MAX485 geht
+    nur mit Pegelwandler auf RO.
+  - Bus als Linie verlegen: GIGA – ESBE-Ventilmodul (ID 2) – Waermepumpe (ID 1).
+    Kein Stern, Stichleitungen kuerzer als ca. 0,5 m.
+  - Kabel: verdrilltes Paar fuer A/B (z. B. ein Paar aus CAT5/CAT6 oder J-Y(St)Y 2x2x0,8),
+    eine Ader des zweiten Paares als gemeinsame Masse (GND) zwischen allen Geraeten.
+  - A an A, B an B. Kommt keine Antwort: A und B tauschen (Hersteller beschriften
+    das unterschiedlich).
+  - Abschluss 120 Ohm nur an den beiden Enden der Linie. Bei 9600 Baud und wenigen
+    Metern meist nicht noetig. Haben mehrere Module einen 120-Ohm-Widerstand
+    aufgeloetet ("R7"/"120"), beim mittleren Geraet entfernen bzw. Jumper oeffnen.
+  - Schirm (falls vorhanden) nur an einer Seite auf Masse.
+
+
+3. RAUMFUEHLER
+--------------
+  Empfehlung: SHT45 oder SHT41 (Sensirion) auf einer kleinen Platine, I2C.
+    Genauer (±0,1..0,2 °C) und stabiler als der DHT22, kein Zeitproblem beim Lesen.
+    VIN -> 3V3, GND -> GND, SDA -> D20, SCL -> D21. Kabel hoechstens ca. 1 m.
+    Im Web: Heizung -> Fuer Fortgeschrittene -> Fuehler-Typ "SHT4x".
+  DHT22 geht weiterhin: Daten an D3, Kabel bei 3,3 V hoechstens ca. 3 m.
+  Fuehler nicht direkt am GIGA/Display montieren (Eigenwaerme) – mind. 15–20 cm
+  darunter oder seitlich, frei umstroemt.
+
+
+4. ARDUINO-IDE
+--------------
+  Boardverwalter:   "Arduino Mbed OS GIGA Boards" installieren
+  Board:            "Arduino GIGA R1 WiFi"
+  Flash split:      "1.5MB M7 + 0.5MB M4" (Standard). Nur wenn der Sketch zu gross
+                    ist: "2MB M7 + M4 in SDRAM".
+  Target core:      "Main Core"
+
+  Bibliotheken (Bibliotheksverwalter):
+    - Arduino_GigaDisplay_GFX    (installiert Adafruit GFX + Adafruit BusIO mit)
+    - Arduino_GigaDisplayTouch
+    - Arduino_USBHostMbed5
+    - PubSubClient               (Nick O'Leary)
+    - ModbusMaster               (Doc Walker)
+
+  WLAN-Zugang steht wie beim ESP oben im Sketch (WIFI_SSID / WIFI_PASS).
+  Upload nur per USB-Kabel (kein Netzwerk-Upload, kein "avarma.local").
+  Die IP-Adresse steht auf dem Display unter System. Im Router am besten eine
+  feste IP fuer den GIGA vergeben.
+
+
+5. ERSTER START
+---------------
+  a) Einmalig QSPIFormat ausfuehren (Beispiele -> STM32H747_System -> QSPIFormat,
+     Standard-Aufteilung bestaetigen), danach WiFiFirmwareUpdater. Damit gibt es
+     Partition 3 (Einstellungen) und Partition 4 (Logdaten). Ist das schon gemacht
+     (Konsole zeigt "QSPI-Flash (Partition 3)"), nichts tun.
+  b) Sketch hochladen, Serieller Monitor 115200 Baud.
+     In der Konsole steht "Einstellungen gespeichert in: ...".
+     - "QSPI-Flash (Partition 3)": alles gut.
+     - "Datenspeicher, Ordner /prefs": der interne Speicher ist nicht partitioniert.
+       Geht auch, dann liegen die Einstellungen auf dem Stick. Besser einmalig:
+       Beispiele -> STM32H747_System -> QSPIFormat (Standard-Aufteilung bestaetigen),
+       danach Beispiele -> STM32H747_System -> WiFiFirmwareUpdater, dann wieder
+       diesen Sketch hochladen.
+     - Meldung "Failed to mount the filesystem containing the WiFi firmware":
+       ebenfalls WiFiFirmwareUpdater ausfuehren.
+  c) Display steht auf dem Kopf? In giga_ui.h  UI_ROTATION 1 <-> 3 tauschen.
+     Touch passt nicht? Display -> System -> Touch-Test einschalten und tippen:
+     das gelbe Kreuz zeigt, wo der Touch ankommt. Dann UI_TOUCH_FLIP (0..3) anpassen.
+
+
+6. UMZUG VOM ESP32-S3 ZUM GIGA (und zurueck)
+--------------------------------------------
+  Am einfachsten ueber das NAS (ESP ab 1.26, GIGA ab 1.27):
+  1. ESP: Web -> System -> NAS-Ablage eingeschaltet lassen. Er sichert die Einstellungen
+     nach jeder Aenderung (Ordner "einstellungen") und alle Messdaten automatisch.
+     Zur Sicherheit vorher noch "Aufs NAS sichern" druecken.
+  2. GIGA: aufspielen, im Web unter System nur die NAS-Ablage eintragen (Server,
+     Benutzer, Passwort, GLEICHER Ordner wie beim ESP) und speichern.
+  3. "Vom NAS einspielen ..." -> aktuell.json -> Einspielen. Alle Einstellungen
+     (Zeiten, Temperaturen, Zeitplaene, Kurven, MQTT, Shelly ...) werden uebernommen,
+     der GIGA startet neu.
+  4. Nach dem Neustart holt er Statistik, Stundenwerte und die letzten Tage selbst vom
+     NAS (interner Speicher leer). Das Archiv auf dem NAS laeuft einfach weiter.
+  Pins (Fuehler, Relais, Modbus DE) werden zwischen ESP und GIGA NICHT uebernommen,
+  dort gelten die GIGA-Werte aus Abschnitt 1.
+  Ohne NAS geht es wie bisher mit "Einstellungen herunterladen" / "Datei einspielen".
+  ESP und GIGA nur dann in verschiedene NAS-Ordner schreiben lassen, wenn beide
+  gleichzeitig laufen.
+
+
+7. UNTERSCHIEDE ZUM ESP
+-----------------------
+  - Logdaten im internen Speicher (QSPI) statt SD-Karte, komplettes Archiv auf dem NAS,
+    14 Tage Verlauf im SDRAM.
+  - Uhrzeit: NTP, Zeitzone Europa/Berlin fest eingebaut (Sommerzeit automatisch).
+  - RGB-LED auf dem Display-Shield zeigt den Zustand: gruen = Verdichter laeuft,
+    orange = Warmwasser, blau = Abtauen, aus = WP aus, rot = keine Verbindung.
+  - Display: Helligkeit, Abdunkeln und Hell/Dunkel unter System (Display).
+  - WLAN-Ausfall: der Neuaufbau blockiert die Webseite kurz; Modbus, Regelung und
+    Display laufen in eigenen Tasks weiter.
+
+
+8. DATENSPEICHER UND NAS-ARCHIV
+-------------------------------
+  Ab Firmware 1.26 braucht der GIGA keinen USB-Stick mehr.
+  - Intern (QSPI-Partition 4, ca. 7 MB, LittleFS): die letzten Tage fein aufgeloest
+    (Standard 10), die Stundenwerte, die Tagesstatistik, die Konsole. Wird beim ersten
+    Start automatisch eingerichtet. Fehlt Partition 4, nimmt er wie frueher den USB-Stick.
+  - NAS per FTP (Web -> System -> "Datenablage auf dem NAS"): bekommt alles.
+      <Ordner>/JJJJ-MM/JJJJ-MM-TT.csv   Tagesdatei, alle 30 s ein Wert
+      <Ordner>/JJJJ-MM/h_JJJJ-MM.csv    Stundenmittel des Monats
+      <Ordner>/stats.csv                Tageswerte
+    Uebertragen wird alle 15 min nur, was neu ist. Aeltere Tage werden intern erst
+    geloescht, wenn sie vollstaendig auf dem NAS liegen. Ist das NAS laenger weg,
+    bleiben sie intern, bis der Platz knapp wird.
+  - Synology: Systemsteuerung -> Dateidienste -> FTP aktivieren (ohne Verschluesselung,
+    nur im Heimnetz), eigener Benutzer mit FTP-Recht. Ordner "/home" ist dessen
+    Home-Ordner (homes/<benutzer>).
+  - Neuaufsetzen / anderer GIGA: Ist der interne Speicher leer, holt der GIGA beim Start
+    Statistik, Stundenwerte (36 Monate) und die letzten Tage vom NAS zurueck.
+  - Watchdog: haengt das Programm laenger als 30 s, startet der GIGA von selbst neu
+    (Konsole: "Letzter Neustart durch den Watchdog").
+
+
+9. ABTAU-AUSWERTUNG UND FROST-BREMSE (ab 1.31, gleich wie beim ESP)
+--------------------------------------------------------------------
+  - Jede Abtauung wird mit den Bedingungen kurz davor in abtau.csv gespeichert
+    (Aussentemperatur, Verdichter-Hz, Verdampfer, Coil, Verdichter-Laufzeit seit der
+    letzten Abtauung). Die Datei geht wie stats.csv mit aufs NAS.
+    Anzeige: Tab Verdichter -> Abtau-Auswertung.
+  - Frost-Bremse (Tab Verdichter, ab Werk aus, braucht die Frequenz-Automatik):
+    Im eingestellten Aussentemperatur-Bereich wird beim Heizen die Frequenzgrenze
+    alle 5 min (bei schnellem Abfall sofort) um einen Schritt gesenkt, solange der Verdampfer kaelter als der
+    Grenzwert ist und der Vorlauf sein Soll noch erreicht.
+  - Ab 1.32 wird die gedaempfte Aussentemperatur waehrend des Abtauens und 15 min
+    danach gehalten (der Fuehler wird vom Abtauen verfaelscht).
+  - Ab 1.33 zeigt der Verlauf auch die Luefterdrehzahl (Reihe "Luefter", rpm/10 auf der Hz-Achse).
+  - Ab 1.34 kann die Puffer-Automatik auch bei einer festen WW-Temperatur auf Puffer gehen (Tab Warmwasser).
+  - Ab 1.35: Nachtabsenkung wahlweise als Kurve nach Aussentemperatur und WP nachts ganz aus ab einer Aussentemperatur (Tab Heizung, Nachtabsenkung).
+  - Ab 1.36: System -> Funktionen: PV/Energiemanagement ein-/ausblenden. Warmwasser wahlweise ueber das
+    Umschaltventil (wie bisher) oder den WW-Modus der WP (Tab Warmwasser). Shelly auch EM, 1PM, PM Mini.
