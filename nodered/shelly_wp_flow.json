@@ -1,0 +1,212 @@
+[
+  {
+    "id": "a1b2c3d4e5f60000",
+    "type": "tab",
+    "label": "Shelly WP",
+    "disabled": false,
+    "info": "Shelly 3EM-63 Gen3 an der Waermepumpe.\nShelly: MQTT an, Topic-Praefix 'shelly-wp', 'Generic status update over MQTT' an.\nWerte stehen danach im Flow-Kontext 'wpShelly' und kommen alle 5 s im Debug."
+  },
+  {
+    "id": "a1b2c3d4e5f60010",
+    "type": "comment",
+    "z": "a1b2c3d4e5f60000",
+    "name": "Shelly 3EM-63 Gen3 – Topic-Praefix shelly-wp (in der Shelly-App gleich einstellen)",
+    "info": "",
+    "x": 330,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "a1b2c3d4e5f60011",
+    "type": "mqtt in",
+    "z": "a1b2c3d4e5f60000",
+    "name": "Shelly WP Status",
+    "topic": "shelly-wp/status/+",
+    "qos": "0",
+    "datatype": "json",
+    "broker": "a1b2c3d4e5f60001",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 100,
+    "wires": [
+      [
+        "a1b2c3d4e5f60013"
+      ]
+    ]
+  },
+  {
+    "id": "a1b2c3d4e5f60012",
+    "type": "inject",
+    "z": "a1b2c3d4e5f60000",
+    "name": "Ueberwachung 60 s",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "60",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "check",
+    "x": 160,
+    "y": 160,
+    "wires": [
+      [
+        "a1b2c3d4e5f60013"
+      ]
+    ]
+  },
+  {
+    "id": "a1b2c3d4e5f60013",
+    "type": "function",
+    "z": "a1b2c3d4e5f60000",
+    "name": "WP-Strom aufbereiten",
+    "func": "// Shelly 3EM-63 Gen3 (Dreiphasen-Profil) -> aufbereitete Werte\n// em:0     = Momentanwerte (W, A, V, PF) je Phase + Summe\n// emdata:0 = Energiezaehler (Wh), Summe und je Phase\nconst now = Date.now();\nlet s = flow.get('wpShelly') || {};\n\nif (msg.topic === 'check') {                       // Ueberwachung (Inject jede Minute)\n    if (!s.tP || now - s.tP > 120000) {\n        node.status({ fill: 'red', shape: 'ring', text: 'keine Daten seit > 2 min' });\n    }\n    return null;\n}\n\nconst comp = String(msg.topic).split('/').pop();   // \"em:0\" oder \"emdata:0\"\nconst p = msg.payload;\nif (typeof p !== 'object' || p === null) return null;\nconst r1 = v => (typeof v === 'number') ? Math.round(v * 10) / 10 : null;\nconst r3 = v => (typeof v === 'number') ? Math.round(v * 1000) / 1000 : null;\n\nif (comp === 'em:0') {\n    s.p   = r1(p.total_act_power);                // W Wirkleistung gesamt\n    s.s   = r1(p.total_aprt_power);               // VA Scheinleistung gesamt\n    s.i   = r3(p.total_current);                  // A Summe der Phasenstroeme\n    s.pf  = (p.total_aprt_power > 1) ? Math.round(p.total_act_power / p.total_aprt_power * 100) / 100 : null;\n    s.L1  = { p: r1(p.a_act_power), i: r3(p.a_current), u: r1(p.a_voltage), pf: p.a_pf };\n    s.L2  = { p: r1(p.b_act_power), i: r3(p.b_current), u: r1(p.b_voltage), pf: p.b_pf };\n    s.L3  = { p: r1(p.c_act_power), i: r3(p.c_current), u: r1(p.c_voltage), pf: p.c_pf };\n    s.tP  = now;\n} else if (comp === 'emdata:0') {\n    if (typeof p.total_act !== 'number') return null;\n    s.eTot = Math.round(p.total_act) / 1000;       // kWh Zaehlerstand (Bezug)\n    const day = new Date().toLocaleDateString('de-DE');\n    if (s.day !== day || typeof s.eDay0 !== 'number') { s.day = day; s.eDay0 = s.eTot; }\n    s.eHeute = Math.round((s.eTot - s.eDay0) * 1000) / 1000;   // kWh seit Mitternacht (bzw. seit Node-RED-Start)\n    s.tE = now;\n} else {\n    return null;\n}\nflow.set('wpShelly', s);\n\nnode.status({ fill: 'green', shape: 'dot',\n    text: `${s.p ?? '-'} W · ${s.i ?? '-'} A · heute ${s.eHeute ?? '-'} kWh` });\n\nmsg.topic = 'wp/strom';\nmsg.payload = {\n    p: s.p, s: s.s, i: s.i, pf: s.pf,\n    L1: s.L1, L2: s.L2, L3: s.L3,\n    eTot: s.eTot, eHeute: s.eHeute,\n    zeit: new Date(now).toISOString()\n};\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 400,
+    "y": 120,
+    "wires": [
+      [
+        "a1b2c3d4e5f60014"
+      ]
+    ]
+  },
+  {
+    "id": "a1b2c3d4e5f60014",
+    "type": "delay",
+    "z": "a1b2c3d4e5f60000",
+    "name": "max. alle 5 s",
+    "pauseType": "rate",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "5",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": true,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 620,
+    "y": 120,
+    "wires": [
+      [
+        "a1b2c3d4e5f60015"
+      ]
+    ]
+  },
+  {
+    "id": "a1b2c3d4e5f60015",
+    "type": "debug",
+    "z": "a1b2c3d4e5f60000",
+    "name": "WP-Strom",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 800,
+    "y": 120,
+    "wires": []
+  },
+  {
+    "id": "a1b2c3d4e5f60016",
+    "type": "mqtt in",
+    "z": "a1b2c3d4e5f60000",
+    "name": "Shelly WP online",
+    "topic": "shelly-wp/online",
+    "qos": "0",
+    "datatype": "utf8",
+    "broker": "a1b2c3d4e5f60001",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 240,
+    "wires": [
+      [
+        "a1b2c3d4e5f60017"
+      ]
+    ]
+  },
+  {
+    "id": "a1b2c3d4e5f60017",
+    "type": "function",
+    "z": "a1b2c3d4e5f60000",
+    "name": "online?",
+    "func": "const on = String(msg.payload) === 'true';\nnode.status(on ? { fill: 'green', shape: 'dot', text: 'online' } : { fill: 'red', shape: 'ring', text: 'offline' });\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 240,
+    "wires": [
+      [
+        "a1b2c3d4e5f60018"
+      ]
+    ]
+  },
+  {
+    "id": "a1b2c3d4e5f60018",
+    "type": "debug",
+    "z": "a1b2c3d4e5f60000",
+    "name": "Shelly online",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 560,
+    "y": 240,
+    "wires": []
+  },
+  {
+    "id": "a1b2c3d4e5f60001",
+    "type": "mqtt-broker",
+    "name": "MQTT-Broker",
+    "broker": "IP-DEINES-MQTT-BROKERS",
+    "port": "1883",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {},
+    "userProps": "",
+    "sessionExpiry": ""
+  }
+]

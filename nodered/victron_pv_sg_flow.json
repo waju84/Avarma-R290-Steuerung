@@ -1,0 +1,1109 @@
+[
+ {
+  "id": "avarma_tab",
+  "type": "tab",
+  "label": "Avarma Waermepumpe",
+  "disabled": false,
+  "info": "Status und Steuerung des ESP32 per MQTT"
+ },
+ {
+  "id": "avarma_broker",
+  "type": "mqtt-broker",
+  "name": "Venus lokal",
+  "broker": "127.0.0.1",
+  "port": "1883",
+  "clientid": "nodered-avarma",
+  "autoConnect": true,
+  "usetls": false,
+  "protocolVersion": "4",
+  "keepalive": "60",
+  "cleansession": true,
+  "birthTopic": "",
+  "birthQos": "0",
+  "birthPayload": "",
+  "closeTopic": "",
+  "closeQos": "0",
+  "closePayload": "",
+  "willTopic": "",
+  "willQos": "0",
+  "willPayload": ""
+ },
+ {
+  "id": "c_state",
+  "type": "comment",
+  "z": "avarma_tab",
+  "name": "1) Status der WP empfangen",
+  "info": "",
+  "x": 160,
+  "y": 40,
+  "wires": []
+ },
+ {
+  "id": "in_state",
+  "type": "mqtt in",
+  "z": "avarma_tab",
+  "name": "avarma/state",
+  "topic": "avarma/state",
+  "qos": "0",
+  "datatype": "json",
+  "broker": "avarma_broker",
+  "nl": false,
+  "rap": true,
+  "rh": 0,
+  "inputs": 0,
+  "x": 130,
+  "y": 80,
+  "wires": [
+   [
+    "split",
+    "dbg_state"
+   ]
+  ]
+ },
+ {
+  "id": "split",
+  "type": "function",
+  "z": "avarma_tab",
+  "name": "Werte einzeln",
+  "func": "// zerlegt avarma/state in einzelne Nachrichten (z. B. fuer Dashboard/InfluxDB)\nconst out = [];\nfor (const [k, v] of Object.entries(msg.payload)) {\n  if (v !== null && typeof v !== 'object') out.push({ topic: 'avarma/wert/' + k, payload: v });\n}\nnode.status({ text: `VL ${msg.payload.vl} RL ${msg.payload.rl} WW ${msg.payload.ww} Aussen ${msg.payload.ta}` });\nreturn [out];",
+  "outputs": 1,
+  "x": 360,
+  "y": 80,
+  "wires": [
+   [
+    "dbg_split",
+    "out_split"
+   ]
+  ]
+ },
+ {
+  "id": "dbg_state",
+  "type": "debug",
+  "z": "avarma_tab",
+  "name": "Status (JSON)",
+  "active": false,
+  "tosidebar": true,
+  "complete": "payload",
+  "x": 370,
+  "y": 120,
+  "wires": []
+ },
+ {
+  "id": "dbg_split",
+  "type": "debug",
+  "z": "avarma_tab",
+  "name": "Einzelwerte",
+  "active": false,
+  "tosidebar": true,
+  "complete": "true",
+  "x": 570,
+  "y": 80,
+  "wires": []
+ },
+ {
+  "id": "in_status",
+  "type": "mqtt in",
+  "z": "avarma_tab",
+  "name": "avarma/status",
+  "topic": "avarma/status",
+  "qos": "1",
+  "datatype": "utf8",
+  "broker": "avarma_broker",
+  "nl": false,
+  "rap": true,
+  "rh": 0,
+  "inputs": 0,
+  "x": 130,
+  "y": 160,
+  "wires": [
+   [
+    "dbg_online"
+   ]
+  ]
+ },
+ {
+  "id": "dbg_online",
+  "type": "debug",
+  "z": "avarma_tab",
+  "name": "online/offline",
+  "active": true,
+  "tosidebar": true,
+  "complete": "payload",
+  "x": 370,
+  "y": 160,
+  "wires": []
+ },
+ {
+  "id": "c_sg",
+  "type": "comment",
+  "z": "avarma_tab",
+  "name": "2) PV-Ueberschuss -> SG-Ready (bekommt PV + SOC von Abschnitt 5)",
+  "info": "PV-Leistung und SOC kommen aus 'Victron -> PV-Daten'. Ohne Batterie SOC_MIN auf 0 setzen.",
+  "x": 380,
+  "y": 220,
+  "wires": []
+ },
+ {
+  "id": "tick1",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "jede Minute",
+  "props": [
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "60",
+  "crontab": "",
+  "once": true,
+  "onceDelay": "5",
+  "topic": "tick",
+  "x": 150,
+  "y": 340,
+  "wires": [
+   [
+    "sg_fn"
+   ]
+  ]
+ },
+ {
+  "id": "sg_fn",
+  "type": "function",
+  "z": "avarma_tab",
+  "name": "PV -> SG-Ready",
+  "func": "// ===== Einstellungen =====\nconst PV_ON     = 2500;    // W: ab dieser PV-Leistung SG aktivieren ...\nconst PV_OFF    = 1500;    // W: ... und darunter wieder auf SG2\nconst SOC_MIN   = 90;      // % Batterie mindestens (ohne Batterie: 0 eintragen)\nconst ON_DELAY  = 10 * 60; // s so lange muss es passen, bevor eingeschaltet wird\nconst OFF_DELAY = 10 * 60; // s so lange darunter, bevor ausgeschaltet wird\nconst SG_ON     = 3;       // 3 = erst WP bis 60 C, dann Heizstab; 4 = WP + Heizstab gleichzeitig\n// ==========================\n\nlet st = context.get('st') || { pv: 0, soc: 100, sg: 2, cand: 2, since: Date.now() };\nif (msg.topic === 'pv')  st.pv  = Number(msg.payload) || 0;\nif (msg.topic === 'soc') st.soc = Number(msg.payload) || 0;\n\nconst now = Date.now();\nlet want = st.cand;\nif (st.pv >= PV_ON && st.soc >= SOC_MIN) want = SG_ON;\nelse if (st.pv < PV_OFF || st.soc < SOC_MIN - 5) want = 2;\nif (want !== st.cand) { st.cand = want; st.since = now; }\n\nconst delay = (st.cand === 2 ? OFF_DELAY : ON_DELAY) * 1000;\nlet changed = false;\nif (st.cand !== st.sg && now - st.since >= delay) { st.sg = st.cand; changed = true; }\ncontext.set('st', st);\n\nnode.status({ fill: st.sg === 2 ? 'grey' : 'green', shape: 'dot',\n              text: `PV ${Math.round(st.pv)} W, SOC ${st.soc} %, SG${st.sg}` });\n\n// jede Minute wiederholen (sonst faellt der ESP nach 15 min auf SG2 zurueck)\nif (msg.topic === 'tick' || changed) return { topic: 'avarma/cmd/sg', payload: String(st.sg) };\nreturn null;",
+  "outputs": 1,
+  "x": 380,
+  "y": 300,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "c_rt",
+  "type": "comment",
+  "z": "avarma_tab",
+  "name": "3) (veraltet) Raum-Regler per MQTT – die Heizkurve im Controller macht das jetzt. Bleibt AUS.",
+  "info": "Z. B. Victron-Knoten 'Temperatursensor' (Ruuvi) oder ein anderer Sensor.\nDer ESP schreibt den VL hoechstens alle 5 min (einstellbar im Web).",
+  "x": 390,
+  "y": 400,
+  "wires": []
+ },
+ {
+  "id": "t_rt",
+  "type": "change",
+  "z": "avarma_tab",
+  "name": "topic = rt",
+  "rules": [
+   {
+    "t": "set",
+    "p": "topic",
+    "pt": "msg",
+    "to": "rt",
+    "tot": "str"
+   }
+  ],
+  "x": 150,
+  "y": 440,
+  "wires": [
+   [
+    "rt_fn"
+   ]
+  ],
+  "d": true
+ },
+ {
+  "id": "tick5",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "alle 5 min",
+  "props": [
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "300",
+  "crontab": "",
+  "once": false,
+  "onceDelay": "",
+  "topic": "tick",
+  "x": 150,
+  "y": 480,
+  "wires": [
+   [
+    "rt_fn"
+   ]
+  ],
+  "d": true
+ },
+ {
+  "id": "rt_fn",
+  "type": "function",
+  "z": "avarma_tab",
+  "name": "Raum-Regler (PI)",
+  "func": "// ===== Einstellungen =====\nconst RT_SOLL  = 21.0;  // C Wohnzimmer\nconst VL_BASIS = 32;    // C VL, wenn die Raumtemperatur genau passt (Startwert)\nconst KP       = 4;     // K VL je K Raumabweichung\nconst KI       = 0.5;   // K VL je K Abweichung und Stunde\nconst VL_MIN   = 25, VL_MAX = 45;\n// ==========================\n\nlet s = context.get('s') || { rt: null, i: 0, last: Date.now() };\nif (msg.topic === 'rt') { s.rt = Number(msg.payload); context.set('s', s); return null; }\nif (msg.topic !== 'tick' || s.rt === null || isNaN(s.rt)) return null;\n\nconst now = Date.now();\nconst h = (now - s.last) / 3600000;\ns.last = now;\nconst e = RT_SOLL - s.rt;\ns.i = Math.max(-8, Math.min(8, s.i + KI * e * h));\nlet vl = Math.round(VL_BASIS + KP * e + s.i);\nvl = Math.max(VL_MIN, Math.min(VL_MAX, vl));\ncontext.set('s', s);\nnode.status({ text: `RT ${s.rt.toFixed(1)} / ${RT_SOLL} C -> VL ${vl} C` });\nreturn { topic: 'avarma/cmd/vl', payload: String(vl) };",
+  "outputs": 1,
+  "x": 380,
+  "y": 460,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ],
+  "d": true
+ },
+ {
+  "id": "c_man",
+  "type": "comment",
+  "z": "avarma_tab",
+  "name": "4) Hand-Befehle zum Testen (anklicken)",
+  "info": "",
+  "x": 170,
+  "y": 540,
+  "wires": []
+ },
+ {
+  "id": "m_sg3",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "SG3 (PV)",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "once": false,
+  "topic": "avarma/cmd/sg",
+  "payload": "3",
+  "payloadType": "str",
+  "x": 140,
+  "y": 580,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_sg2",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "SG2 (normal)",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "once": false,
+  "topic": "avarma/cmd/sg",
+  "payload": "2",
+  "payloadType": "str",
+  "x": 150,
+  "y": 620,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_ww",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "WW laden auf 55",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "once": false,
+  "topic": "avarma/cmd/wwload",
+  "payload": "55",
+  "payloadType": "str",
+  "x": 160,
+  "y": 660,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_vl",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "VL 35 (nur ohne Heizkurve)",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "once": false,
+  "topic": "avarma/cmd/vl",
+  "payload": "35",
+  "payloadType": "str",
+  "x": 130,
+  "y": 700,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ],
+  "d": true
+ },
+ {
+  "id": "m_heat",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Heizstab 30 min",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "once": false,
+  "topic": "avarma/cmd/heater",
+  "payload": "30",
+  "payloadType": "str",
+  "x": 160,
+  "y": 740,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "out_cmd",
+  "type": "mqtt out",
+  "z": "avarma_tab",
+  "name": "an ESP",
+  "topic": "",
+  "qos": "0",
+  "retain": "false",
+  "broker": "avarma_broker",
+  "x": 650,
+  "y": 700,
+  "wires": []
+ },
+ {
+  "id": "c_pvd",
+  "type": "comment",
+  "z": "avarma_tab",
+  "name": "5) PV-Daten vom Victron-System -> avarma/pv/... (Knoten sind schon verdrahtet; Name = Schluessel)",
+  "info": "Victron-Knoten (Palette 'Victron Energy'), jeweils Feld 'Name' ausfuellen:\nSystem -> MPPTs - power (W): pv_dc\nSystem -> PV - AC-coupled on input L1 (W): pv_ac_L1 (nur mit PV-Wechselrichter, je Phase)\nSystem -> Battery State of Charge (%): soc\nSystem -> Battery Power (W): bat\nSystem -> Grid L1 (W): grid_L1 (L2, L3 bei Drehstrom)\nSystem -> AC Consumption L1 (W): house_L1 (L2, L3)\nSolar Charger -> Yield today (kWh): today_1 (je MPPT)\nSolar Charger -> Yield yesterday (kWh): yesterday_1",
+  "x": 420,
+  "y": 860,
+  "wires": []
+ },
+ {
+  "id": "inj_kamin",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Kamin AN",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/kamin",
+  "payload": "1",
+  "payloadType": "str",
+  "x": 380,
+  "y": 860,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "inj_kamin0",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Kamin AUS",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/kamin",
+  "payload": "0",
+  "payloadType": "str",
+  "x": 380,
+  "y": 900,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "pvd_fn",
+  "type": "function",
+  "z": "avarma_tab",
+  "name": "Victron -> PV-Daten",
+  "func": "// Sammelt die Werte der Victron-Knoten und schickt sie an den ESP (Display \"PV\")\n// und an \"PV -> SG-Ready\". Jeder Victron-Knoten bekommt als NAME einen dieser Schluessel:\n//   pv_dc            System: MPPTs - power (W)              (alle MPPTs zusammen)\n//   pv_ac_L1..L3     System: PV - AC-coupled on input/output Lx (nur bei PV-Wechselrichter)\n//   soc              System: Battery State of Charge (%)\n//   bat              System: Battery Power (W)              (+ = laden)\n//   grid_L1..L3      System: Grid Lx (W)                    (+ = Bezug)\n//   house_L1..L3     System: AC Consumption Lx (W)\n//   today_1, today_2 ...       Solar Charger: Yield today (kWh)      (je MPPT ein Knoten)\n//   yesterday_1, yesterday_2   Solar Charger: Yield yesterday (kWh)\n// Gleiche Anfaenge werden addiert (L1+L2+L3, mehrere MPPTs).\nconst name = String(msg.topic || '').trim();\nlet v = msg.payload;\nif (v !== null && typeof v === 'object' && 'value' in v) v = v.value;\nv = Number(v);\nif (!name || !isFinite(v)) return null;\n\nconst vals = context.get('vals') || {};\nvals[name] = v;\ncontext.set('vals', vals);\n\nconst sum = (...pre) => {\n  let s = null;\n  for (const [k, x] of Object.entries(vals))\n    if (pre.some(p => k === p || k.startsWith(p + '_'))) s = (s || 0) + x;\n  return s;\n};\nconst out = {\n  power: sum('pv_dc', 'pv_ac'),\n  soc: sum('soc'), bat: sum('bat'), grid: sum('grid'), house: sum('house'),\n  today: sum('today'), yesterday: sum('yesterday')\n};\n\n// an den ESP: je Wert hoechstens alle 10 s, grosse Aenderungen sofort\nconst last = context.get('last') || {};\nconst now = Date.now();\nconst toEsp = [];\nfor (const [k, x] of Object.entries(out)) {\n  if (x === null) continue;\n  const l = last[k];\n  const step = k === 'soc' ? 1 : (k === 'today' || k === 'yesterday') ? 0.1 : 300;\n  if (l && now - l.t < 10000 && Math.abs(x - l.v) < step) continue;\n  if (l && l.v === x && now - l.t < 60000) continue;\n  last[k] = { v: x, t: now };\n  const dec = (k === 'today' || k === 'yesterday') ? 2 : 0;\n  toEsp.push({ topic: 'avarma/pv/' + k, payload: x.toFixed(dec) });\n}\ncontext.set('last', last);\n\n// an PV -> SG-Ready\nconst toSg = [];\nif (out.power !== null && (name.startsWith('pv_'))) toSg.push({ topic: 'pv', payload: out.power });\nif (name === 'soc') toSg.push({ topic: 'soc', payload: v });\n\nnode.status({ text: `PV ${out.power ?? '-'} W  SOC ${out.soc ?? '-'} %  Netz ${out.grid ?? '-'} W` });\nreturn [toEsp, toSg];",
+  "outputs": 2,
+  "noerr": 0,
+  "initialize": "",
+  "finalize": "",
+  "libs": [],
+  "x": 650,
+  "y": 1000,
+  "wires": [
+   [
+    "out_cmd"
+   ],
+   [
+    "sg_fn"
+   ]
+  ]
+ },
+ {
+  "id": "out_split",
+  "type": "mqtt out",
+  "z": "avarma_tab",
+  "name": "Einzelwerte -> avarma/wert/... (optional)",
+  "topic": "",
+  "qos": "0",
+  "retain": "false",
+  "broker": "avarma_broker",
+  "x": 630,
+  "y": 40,
+  "wires": [],
+  "d": true
+ },
+ {
+  "id": "m_x0",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "WW-Ladung stoppen",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/wwload",
+  "payload": "0",
+  "payloadType": "str",
+  "x": 380,
+  "y": 580,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_x1",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Ventil Automatik",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/valve",
+  "payload": "auto",
+  "payloadType": "str",
+  "x": 380,
+  "y": 620,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_x2",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Auto-WP AN",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/autowp",
+  "payload": "1",
+  "payloadType": "str",
+  "x": 380,
+  "y": 660,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_x3",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Auto-WP AUS",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/autowp",
+  "payload": "0",
+  "payloadType": "str",
+  "x": 380,
+  "y": 700,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_x4",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Sperrzeiten AN",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/sperre",
+  "payload": "1",
+  "payloadType": "str",
+  "x": 380,
+  "y": 740,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_x5",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Sperrzeiten AUS",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/sperre",
+  "payload": "0",
+  "payloadType": "str",
+  "x": 380,
+  "y": 780,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "m_x6",
+  "type": "inject",
+  "z": "avarma_tab",
+  "name": "Raum-Soll 21,5",
+  "props": [
+   {
+    "p": "payload"
+   },
+   {
+    "p": "topic",
+    "vt": "str"
+   }
+  ],
+  "repeat": "",
+  "crontab": "",
+  "once": false,
+  "onceDelay": 0.1,
+  "topic": "avarma/cmd/rtsoll",
+  "payload": "21.5",
+  "payloadType": "str",
+  "x": 380,
+  "y": 820,
+  "wires": [
+   [
+    "out_cmd"
+   ]
+  ]
+ },
+ {
+  "id": "v_pv",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Dc/Pv/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Dc/Pv/Power",
+   "type": "float",
+   "name": "MPPTs - power (W)"
+  },
+  "name": "pv_dc",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 900,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_soc",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Dc/Battery/Soc",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Dc/Battery/Soc",
+   "type": "float",
+   "name": "Battery State of Charge (%)"
+  },
+  "name": "soc",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 940,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_bat",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Dc/Battery/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Dc/Battery/Power",
+   "type": "float",
+   "name": "Battery Power (W)"
+  },
+  "name": "bat",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 980,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_grid1",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Ac/Grid/L1/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Ac/Grid/L1/Power",
+   "type": "float",
+   "name": "Grid L1 (W)"
+  },
+  "name": "grid_L1",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1020,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_grid2",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Ac/Grid/L2/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Ac/Grid/L2/Power",
+   "type": "float",
+   "name": "Grid L2 (W)"
+  },
+  "name": "grid_L2",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1060,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_grid3",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Ac/Grid/L3/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Ac/Grid/L3/Power",
+   "type": "float",
+   "name": "Grid L3 (W)"
+  },
+  "name": "grid_L3",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1100,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_cons1",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Ac/Consumption/L1/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Ac/Consumption/L1/Power",
+   "type": "float",
+   "name": "AC Consumption L1 (W)"
+  },
+  "name": "house_L1",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1140,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_cons2",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Ac/Consumption/L2/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Ac/Consumption/L2/Power",
+   "type": "float",
+   "name": "AC Consumption L2 (W)"
+  },
+  "name": "house_L2",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1180,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_cons3",
+  "type": "victron-input-system",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.system/0",
+  "path": "/Ac/Consumption/L3/Power",
+  "serviceObj": {
+   "service": "com.victronenergy.system/0",
+   "name": "Venus system"
+  },
+  "pathObj": {
+   "path": "/Ac/Consumption/L3/Power",
+   "type": "float",
+   "name": "AC Consumption L3 (W)"
+  },
+  "name": "house_L3",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1220,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_y289_0",
+  "type": "victron-input-solarcharger",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.solarcharger/289",
+  "path": "/History/Daily/0/Yield",
+  "serviceObj": {
+   "service": "com.victronenergy.solarcharger/289",
+   "name": "MPPT-289"
+  },
+  "pathObj": {
+   "path": "/History/Daily/0/Yield",
+   "type": "float",
+   "name": "Yield today (kWh)"
+  },
+  "name": "today_1",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1260,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_y289_1",
+  "type": "victron-input-solarcharger",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.solarcharger/289",
+  "path": "/History/Daily/1/Yield",
+  "serviceObj": {
+   "service": "com.victronenergy.solarcharger/289",
+   "name": "MPPT-289"
+  },
+  "pathObj": {
+   "path": "/History/Daily/1/Yield",
+   "type": "float",
+   "name": "Yield yesterday (kWh)"
+  },
+  "name": "yesterday_1",
+  "onlyChanges": false,
+  "x": 400,
+  "y": 1260,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_y292_0",
+  "type": "victron-input-solarcharger",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.solarcharger/292",
+  "path": "/History/Daily/0/Yield",
+  "serviceObj": {
+   "service": "com.victronenergy.solarcharger/292",
+   "name": "MPPT-292"
+  },
+  "pathObj": {
+   "path": "/History/Daily/0/Yield",
+   "type": "float",
+   "name": "Yield today (kWh)"
+  },
+  "name": "today_2",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1300,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_y292_1",
+  "type": "victron-input-solarcharger",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.solarcharger/292",
+  "path": "/History/Daily/1/Yield",
+  "serviceObj": {
+   "service": "com.victronenergy.solarcharger/292",
+   "name": "MPPT-292"
+  },
+  "pathObj": {
+   "path": "/History/Daily/1/Yield",
+   "type": "float",
+   "name": "Yield yesterday (kWh)"
+  },
+  "name": "yesterday_2",
+  "onlyChanges": false,
+  "x": 400,
+  "y": 1300,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_y293_0",
+  "type": "victron-input-solarcharger",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.solarcharger/293",
+  "path": "/History/Daily/0/Yield",
+  "serviceObj": {
+   "service": "com.victronenergy.solarcharger/293",
+   "name": "MPPT-293"
+  },
+  "pathObj": {
+   "path": "/History/Daily/0/Yield",
+   "type": "float",
+   "name": "Yield today (kWh)"
+  },
+  "name": "today_3",
+  "onlyChanges": false,
+  "x": 160,
+  "y": 1340,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "v_y293_1",
+  "type": "victron-input-solarcharger",
+  "z": "avarma_tab",
+  "service": "com.victronenergy.solarcharger/293",
+  "path": "/History/Daily/1/Yield",
+  "serviceObj": {
+   "service": "com.victronenergy.solarcharger/293",
+   "name": "MPPT-293"
+  },
+  "pathObj": {
+   "path": "/History/Daily/1/Yield",
+   "type": "float",
+   "name": "Yield yesterday (kWh)"
+  },
+  "name": "yesterday_3",
+  "onlyChanges": false,
+  "x": 400,
+  "y": 1340,
+  "wires": [
+   [
+    "pvd_fn"
+   ]
+  ]
+ },
+ {
+  "id": "c_pvd2",
+  "type": "comment",
+  "z": "avarma_tab",
+  "name": "MPPT-Knoten: falls kein Wert kommt, Knoten oeffnen und das eigene MPPT auswaehlen",
+  "x": 460,
+  "y": 1390,
+  "wires": []
+ }
+]

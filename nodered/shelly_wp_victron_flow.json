@@ -1,0 +1,81 @@
+[
+ {
+  "id": "d9e5f6a7b8c90000",
+  "type": "tab",
+  "label": "WP an Victron",
+  "disabled": false,
+  "info": "Shelly 3EM der Waermepumpe als virtuelle Waermepumpe in Venus OS / VRM (Venus OS ab 3.80).\nBraucht den Broker-Knoten aus dem Flow 'Shelly WP'."
+ },
+ {
+  "id": "d9e5f6a7b8c90010",
+  "type": "comment",
+  "z": "d9e5f6a7b8c90000",
+  "name": "Shelly WP -> Victron Waermepumpe (3 Phasen, AC input)",
+  "info": "",
+  "x": 250,
+  "y": 40,
+  "wires": []
+ },
+ {
+  "id": "d9e5f6a7b8c90011",
+  "type": "mqtt in",
+  "z": "d9e5f6a7b8c90000",
+  "name": "Shelly WP Status",
+  "topic": "shelly-wp/status/+",
+  "qos": "0",
+  "datatype": "json",
+  "broker": "a1b2c3d4e5f60001",
+  "nl": false,
+  "rap": true,
+  "rh": 0,
+  "inputs": 0,
+  "x": 150,
+  "y": 100,
+  "wires": [
+   [
+    "d9e5f6a7b8c90012"
+   ]
+  ]
+ },
+ {
+  "id": "d9e5f6a7b8c90012",
+  "type": "function",
+  "z": "d9e5f6a7b8c90000",
+  "name": "Shelly -> Victron-Pfade",
+  "func": "// Shelly 3EM (shelly-wp/status/em:0 + emdata:0) -> Victron Virtual Device \"Waermepumpe\"\n// nur Pfade, die AC-Load und Energiezaehler (alle Palette-Versionen) kennen\nconst c = String(msg.topic).split('/').pop(), p = msg.payload;\nif (!p || typeof p !== 'object') return null;\nconst out = {};\nconst put = (k, v) => { if (typeof v === 'number' && isFinite(v)) out[k] = Math.round(v * 1000) / 1000; };\n\nif (c === 'em:0') {                                   // Momentanwerte\n    put('Ac/Power', p.total_act_power);\n    for (const [L, x] of [['L1', 'a'], ['L2', 'b'], ['L3', 'c']]) {\n        put(`Ac/${L}/Power`, p[x + '_act_power']);\n        put(`Ac/${L}/Voltage`, p[x + '_voltage']);\n        put(`Ac/${L}/Current`, p[x + '_current']);\n        put(`Ac/${L}/PowerFactor`, p[x + '_pf']);\n    }\n    node.status({ fill: 'green', shape: 'dot', text: Math.round(p.total_act_power) + ' W' });\n} else if (c === 'emdata:0') {                        // Zaehlerstaende Wh -> kWh\n    put('Ac/Energy/Forward', p.total_act / 1000);\n    put('Ac/L1/Energy/Forward', p.a_total_act_energy / 1000);\n    put('Ac/L2/Energy/Forward', p.b_total_act_energy / 1000);\n    put('Ac/L3/Energy/Forward', p.c_total_act_energy / 1000);\n} else {\n    return null;\n}\nif (!Object.keys(out).length) return null;\nmsg.payload = out;\nreturn msg;",
+  "outputs": 1,
+  "timeout": 0,
+  "noerr": 0,
+  "initialize": "",
+  "finalize": "",
+  "libs": [],
+  "x": 380,
+  "y": 100,
+  "wires": [
+   [
+    "d9e5f6a7b8c90013"
+   ]
+  ]
+ },
+ {
+  "id": "d9e5f6a7b8c90013",
+  "type": "victron-virtual",
+  "z": "d9e5f6a7b8c90000",
+  "name": "Wärmepumpe",
+  "client": "victron-client-id",
+  "outputs": 1,
+  "device": "heatpump",
+  "default_values": false,
+  "enable_s2support": false,
+  "start_disconnected": false,
+  "x": 600,
+  "y": 100,
+  "wires": [
+   []
+  ],
+  "heatpump_position": "1",
+  "heatpump_nrofphases": "3",
+  "heatpump_phasesetting": "1",
+  "heatpump_auto_energy": false
+ }
+]
